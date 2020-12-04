@@ -86,7 +86,7 @@ mod std {
             }
         });
         let _lock = unsafe { LOCK.as_ref().unwrap().lock().unwrap() };
-        return f()
+        f()
     }
 
     pub fn signal_event_ready() {

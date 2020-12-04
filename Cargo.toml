@@ -6,11 +6,18 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[dependencies.paste]
+version = "1.0.3"
+
 [dependencies.heapless]
 version = "0.5.6"
 
 [dependencies.log]
 version = "0.4.11"
+features = ["std"]
+
+[dependencies.simple_logger]
+version = "1.11.0"
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 cortex-m = "0.6.3"
