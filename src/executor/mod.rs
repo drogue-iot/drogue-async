@@ -1,3 +1,5 @@
+mod task;
+
 use core::{
     cell::UnsafeCell,
     fmt::{
@@ -59,7 +61,7 @@ impl Task {
             name: name.into(),
             ready: AtomicU8::new(TASK_READY),
             future: UnsafeCell::new(async {
-                future.await
+                future.await;
                 // `spawn`-ed tasks must never terminate
                 //crate::abort()
             }),
