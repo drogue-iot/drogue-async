@@ -60,6 +60,7 @@ pub struct TaskFuture<F>
     where
         F: ?Sized + Future,
 {
+    name: String<U16>,
     state: AtomicU8,
     completion_waker: UnsafeCell<Option<Waker>>,
     exit: UnsafeCell<Option<F::Output>>,
@@ -71,8 +72,9 @@ impl<F> TaskFuture<F>
         F: Future,
         F::Output: Copy,
 {
-    pub fn new(future: F) -> Self {
+    pub fn new(name: &str, future: F) -> Self {
         TaskFuture {
+            name: name.into(),
             state: AtomicU8::new(TASK_READY),
             completion_waker: UnsafeCell::new(None),
             exit: UnsafeCell::new(None),
@@ -80,9 +82,9 @@ impl<F> TaskFuture<F>
         }
     }
 
-    pub fn new_static(alloc: &'static mut Alloc, future: F) -> Spawner<F> {
+    pub fn new_static(alloc: &'static mut Alloc, name: &str, future: F) -> Spawner<F> {
         let task = alloc.alloc_init(
-            Self::new(future)
+            Self::new(name, future)
         ).unwrap();
 
         let handle = JoinHandle::new(task);
@@ -107,7 +109,7 @@ pub trait Task {
     fn is_terminated(&self) -> bool;
     fn mark_terminated(&self);
 
-    fn get_state_handle(&self) -> &AtomicU8;
+    fn get_state_handle(&self) -> *const ();
 
     fn do_poll(&self);
 }
@@ -121,7 +123,9 @@ impl<F> Task for TaskFuture<F>
           F::Output: Copy,
 {
     fn is_ready(&self) -> bool {
-        self.state.load(Ordering::Relaxed) == TASK_READY
+        let result = self.state.load(Ordering::Acquire);
+        println!("{} is ready? {:?} {}", self.name, &self.state as *const _, result);
+        result == TASK_READY
     }
 
     fn mark_ready(&self) {
@@ -144,14 +148,15 @@ impl<F> Task for TaskFuture<F>
         self.state.store(TASK_TERMINATED, Ordering::Relaxed);
     }
 
-    fn get_state_handle(&self) -> &AtomicU8 {
-        &self.state
+    fn get_state_handle(&self) -> *const () {
+        &self.state as *const _ as *const ()
     }
 
 
     fn do_poll(&self) {
+        println!("do-poll {}", self.name);
         self.mark_pending();
-        let raw_waker = RawWaker::new(&self.get_state_handle() as *const _ as *const _, &VTABLE);
+        let raw_waker = RawWaker::new(self.get_state_handle(), &VTABLE);
         let waker = unsafe { Waker::from_raw(raw_waker) };
         let mut context = Context::from_waker(&waker);
 
@@ -160,9 +165,11 @@ impl<F> Task for TaskFuture<F>
         let result = pin.poll(&mut context);
 
         if let Poll::Ready(val) = result {
-            //self.exit.replace(val);
+            println!("terminated {}", self.name);
             self.mark_terminated();
             unsafe {
+                self.exit.get().replace(Some(val));
+                println!("waking waiter");
                 let waker = &*self.completion_waker.get();
                 if let Some(ref waker) = waker {
                     waker.wake_by_ref();
@@ -209,11 +216,14 @@ impl<F> Future for JoinHandle<F>
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("polling handle for {}", self.task.name);
         unsafe {
             let v = &*self.task.exit.get();
             if let Some(val) = v {
+                println!("{} is ready", self.task.name);
                 Poll::Ready(*val)
             } else {
+                println!("{} is pending", self.task.name);
                 (self.task.completion_waker.get()).replace(Some(cx.waker().clone()));
                 Poll::Pending
             }
@@ -235,12 +245,13 @@ impl Executor {
         }
     }
 
-    pub fn spawn<F>(&self, future: F) -> JoinHandle<F>
+    pub fn spawn<F>(&self, name: &str, future: F) -> JoinHandle<F>
         where F: Future,
               F::Output: Copy,
     {
         let spawner = TaskFuture::new_static(
             unsafe { &mut *self.alloc.get() },
+            name,
             future,
         );
         self.schedule(spawner)
@@ -258,6 +269,7 @@ impl Executor {
     }
 
     fn run(&'static self) {
+        println!("run!");
         let mut num = 0;
         loop {
             if platform::critical_section(|| {
@@ -266,6 +278,7 @@ impl Executor {
                     (*self.tasks.get()).len() == (*self.tasks.get()).iter().filter(|e| e.is_terminated()).count()
                 }
             }) {
+                println!("terminating");
                 return;
             }
 
@@ -281,10 +294,9 @@ impl Executor {
                         .clone()
                 });
 
+
             for t in ready.iter() {
-                let raw_waker = RawWaker::new(&t.get_state_handle() as *const _ as *const _, &VTABLE);
-                let waker = unsafe { Waker::from_raw(raw_waker) };
-                let mut context = Context::from_waker(&waker);
+                println!("loop!");
                 unsafe {
                     t.do_poll();
                 }
@@ -297,12 +309,15 @@ impl Executor {
 // NOTE `*const ()` is &AtomicU8
 static VTABLE: RawWakerVTable = {
     unsafe fn clone(p: *const ()) -> RawWaker {
+        println!("waker: clone {:?}", p);
         RawWaker::new(p, &VTABLE)
     }
     unsafe fn wake(p: *const ()) {
+        println!("waker: wake");
         wake_by_ref(p)
     }
     unsafe fn wake_by_ref(p: *const ()) {
+        println!("waker: wake by ref {:?}", p);
         (*(p as *const AtomicU8)).store(TASK_READY, Ordering::Release);
     }
     unsafe fn drop(_: *const ()) {}
@@ -310,11 +325,11 @@ static VTABLE: RawWakerVTable = {
     RawWakerVTable::new(clone, wake, wake_by_ref, drop)
 };
 
-pub fn spawn<F>(future: F) -> JoinHandle<F>
+pub fn spawn<F>(name: &str, future: F) -> JoinHandle<F>
     where F: Future,
           F::Output: Copy, {
     unsafe {
-        EXECUTOR.as_ref().unwrap().spawn(future)
+        EXECUTOR.as_ref().unwrap().spawn(name, future)
     }
 }
 
@@ -349,29 +364,22 @@ mod tests {
     use crate::alloc::Alloc;
 
     #[test]
-    fn task_ctor() {
-        //static mut MEMORY: [u8; 1024] = [0; 1024];
-        //static mut ALLOC: Option<Alloc> = None;
-        //unsafe {
-        //let mut alloc = Alloc::new(&mut MEMORY);
-        //ALLOC.replace(alloc);
-        //}
-
-        //let mut s1 = TaskFuture::new_static(unsafe { ALLOC.as_mut().unwrap() }, async move { 42 });
-        //let mut s2 = TaskFuture::new_static(unsafe { ALLOC.as_mut().unwrap() }, async move { "howdy" });
-
-        //let e = Executor::new();
+    fn recurse() {
         init_executor!( 1024 );
-        //let j1 = e.schedule(s1);
-        //let j2 = e.schedule(s2);
-        let j1 = spawn(async move {
-            //42
-            spawn(async move {
+        let j1 = spawn("root-1", async move {
+            let s1 = spawn("sub-1", async move {
                 19
-            }).await
+            });
+
+            let s2 = spawn("sub-2", async move {
+                22
+            });
+
+            s1.await;
+            s2.await
         });
 
-        let j2 = spawn(async move {
+        let j2 = spawn("root-2", async move {
             "howdy"
         });
 
@@ -379,5 +387,7 @@ mod tests {
 
         let v1 = j1.join();
         let v2 = j2.join();
+
+        println!( "v1={}, v2={}", v1, v2);
     }
 }
