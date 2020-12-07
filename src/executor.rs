@@ -113,7 +113,7 @@ impl<F> TCB<F>
     }
 }
 
-pub trait Task {
+trait Task {
     fn is_ready(&self) -> bool;
     fn signal_ready(&self);
 
@@ -162,7 +162,6 @@ impl<F> Task for TCB<F>
         &self.state as *const _ as *const ()
     }
 
-
     fn do_poll(&self) {
         println!("do-poll {}", self.name);
         self.signal_pending();
@@ -189,6 +188,7 @@ impl<F> Task for TCB<F>
     }
 }
 
+// TODO: Move storage of exit value within JoinHandle itself and track drops.
 pub struct JoinHandle<F>
     where F: Future + ?Sized + 'static,
           F::Output: Copy,
@@ -316,15 +316,12 @@ impl Executor {
 // NOTE `*const ()` is &AtomicU8
 static VTABLE: RawWakerVTable = {
     unsafe fn clone(p: *const ()) -> RawWaker {
-        //println!("waker: clone {:?}", p);
         RawWaker::new(p, &VTABLE)
     }
     unsafe fn wake(p: *const ()) {
-        //println!("waker: wake");
         wake_by_ref(p)
     }
     unsafe fn wake_by_ref(p: *const ()) {
-        //println!("waker: wake by ref {:?}", p);
         (*(p as *const AtomicU8)).store(TASK_READY, Ordering::Release);
     }
     unsafe fn drop(_: *const ()) {}
@@ -332,42 +329,15 @@ static VTABLE: RawWakerVTable = {
     RawWakerVTable::new(clone, wake, wake_by_ref, drop)
 };
 
-pub async fn defer() {
-    struct Defer {
-        yielded: bool,
-    }
-
-    impl Future for Defer {
-        type Output = ();
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if self.yielded {
-                Poll::Ready(())
-            } else {
-                self.yielded = true;
-                // wake ourselves
-                cx.waker().wake_by_ref();
-                //unsafe { crate::signal_event_ready(); }
-                Poll::Pending
-            }
-        }
-    }
-
-    Defer { yielded: false }.await
-}
-
-pub fn spawn<F>(name: &str, future: F) -> Result<JoinHandle<F>, SpawnError>
-    where F: Future,
-          F::Output: Copy, {
-    log::error!("spawn!!!");
-    unsafe {
-        EXECUTOR.as_ref().unwrap().spawn(name, future)
-    }
-}
-
 pub fn run() {
     unsafe {
         EXECUTOR.as_ref().unwrap().run()
+    }
+}
+
+pub fn run_forever() -> ! {
+    loop {
+        run()
     }
 }
 
@@ -392,14 +362,14 @@ macro_rules! init_executor {
 
 #[cfg(test)]
 mod tests {
-    use crate::executor::{Executor, spawn, run, defer};
+    use crate::executor::{Executor, run};
     use simple_logger::SimpleLogger;
+    use crate::task::{spawn, defer};
 
 
     #[test]
     fn recurse() {
         SimpleLogger::new().init().unwrap();
-        log::error!("WHAT");
 
         init_executor!( 1024 );
         let j1 = spawn("root-1", async move {

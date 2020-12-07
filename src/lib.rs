@@ -10,6 +10,7 @@ extern crate std;
 mod executor;
 mod alloc;
 mod platform;
+pub mod task;
 
 #[cfg(test)]
 mod tests {
