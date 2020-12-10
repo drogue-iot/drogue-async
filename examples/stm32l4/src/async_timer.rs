@@ -18,7 +18,6 @@ use cortex_m::peripheral::NVIC;
 use crate::timer::Timer;
 use embedded_time::duration::Milliseconds;
 
-
 pub(crate) static mut ASYNC_TIMER: Option<AsyncTimer> = None;
 
 // ------------------------------------------------------------------------
@@ -78,7 +77,6 @@ impl AsyncTimer {
     }
 
     async fn schedule(&self, deadline: Milliseconds) {
-        log::info!( "DELAY {}", deadline.0);
         struct Delay {
             index: u8,
         }
@@ -99,31 +97,26 @@ impl AsyncTimer {
 
         let delay = cortex_m::interrupt::free(|cs| {
             unsafe {
-                log::info!( "*A delay current {}", (*self.timer.get()).value());
                 let index = (*self.waiters.get()).iter_mut().enumerate().find(|e| matches!( e, (_, None) )).unwrap().0;
                 (*self.waiters.get())[index] = Some(Waiter {
                     deadline,
                     waker: None,
                 });
 
-                log::info!( "*B delay current {}", (*self.timer.get()).value());
                 match (*self.next_deadline.get()) {
                     None => {
                         (*self.next_deadline.get()).replace(deadline);
-                        log::info!("A Scheduling for {}", deadline);
                         (*self.timer.get()).start(deadline);
                     }
                     Some(next_deadline) => {
+                        // TODO: calculate offset based on perhaps unexpired in-progress deadline we just interrupted and how it affects the math
                         if deadline < next_deadline {
                             (*self.next_deadline.get()).replace(deadline);
-                            log::info!("B Scheduling for {}", deadline);
                             (*self.timer.get()).start(deadline);
-                            log::info!( "delay schedule {}", (*self.timer.get()).value());
                         }
                     }
                 }
 
-                log::info!( "*C delay current {}", (*self.timer.get()).value());
                 Delay {
                     index: index as u8
                 }
@@ -134,19 +127,15 @@ impl AsyncTimer {
     }
 
     pub fn signal(&self, cs: &CriticalSection) {
-        log::info!("expired");
-
         unsafe {
             (*self.timer.get()).clear_update_interrupt_flag();
             if let Some(current_deadline) = (*self.next_deadline.get()) {
                 let mut next_deadline = None;
                 for waiter in (*self.waiters.get()).iter_mut().filter(|e| matches!(e, Some(_))) {
                     if let Some(waiter) = waiter {
-                        log::info!("compare {} expired {}", waiter.deadline, current_deadline);
                         if waiter.deadline <= current_deadline {
                             waiter.deadline.0 = 0;
                             if let Some(ref waker) = waiter.waker {
-                                log::info!("waking");
                                 waker.wake_by_ref();
                             }
                         } else {
@@ -165,8 +154,6 @@ impl AsyncTimer {
                     }
                 }
                 if let Some(next_deadline) = next_deadline {
-                    //(*self.timer.get()).start(next_deadline as u32);
-                    log::info!("C Scheduling for {}", next_deadline);
                     (*self.timer.get()).start(next_deadline);
                 } else {
                     (*self.next_deadline.get()).take();
