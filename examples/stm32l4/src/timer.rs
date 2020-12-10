@@ -38,8 +38,6 @@ macro_rules! hal {
                 #[allow(unused_unsafe)]
                 pub fn start(&mut self, duration: Milliseconds)
                 {
-
-                    log::info!("starting");
                     // pause
                     self.tim.cr1.modify(|_, w| w.cen().clear_bit());
 
@@ -68,7 +66,6 @@ macro_rules! hal {
                     self.clear_update_interrupt_flag();
                     self.tim.dier.write(|w| w.uie().set_bit());
 
-                    log::info!("enable counter");
                     // start counter
                     self.tim.cr1.modify(|_, w| w.cen().set_bit().opm().set_bit() );
                 }

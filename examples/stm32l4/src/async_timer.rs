@@ -23,6 +23,7 @@ pub(crate) static mut ASYNC_TIMER: Option<AsyncTimer> = None;
 // ------------------------------------------------------------------------
 // ------------------------------------------------------------------------
 
+/// Timer capable of providing (at the moment) delays for up to 8 waiters.
 pub struct AsyncTimer {
     timer: UnsafeCell<Timer<TIMER>>,
     waiters: UnsafeCell<[Option<Waiter>; 8]>,
