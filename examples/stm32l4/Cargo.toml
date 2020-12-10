@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies.drogue-async]
 path = "../../"
 default-features = false
+features = ["cortex-m"]
 
 [dependencies.cortex-m]
 version = "0.6"
