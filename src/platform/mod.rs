@@ -1,30 +1,31 @@
-#[cfg(no_std)]
-pub use self::no_std::in_thread_mode as in_thread_mode;
+#[cfg(target_arch = "arm")]
+pub use self::arm::in_thread_mode as in_thread_mode;
 
-#[cfg(no_std)]
-pub use self::no_std::critical_section as critical_section;
+#[cfg(target_arch = "arm")]
+pub use self::arm::critical_section as critical_section;
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 pub use self::std::in_thread_mode as in_thread_mode;
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 pub use self::std::critical_section as critical_section;
 
 #[cfg(target_arch = "arm")]
 pub use cortex_m::asm::udf as abort;
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 pub use self::std::abort as abort;
 
 #[cfg(target_arch = "arm")]
 pub use self::arm::signal_event_ready as signal_event_ready;
 
-#[cfg(not(no_std))]
+#[cfg(feature = "std")]
 pub use self::std::signal_event_ready as signal_event_ready;
 
 
 #[cfg(target_arch = "arm")]
 mod arm {
+    use cortex_m::asm;
     #[inline]
     /// Prevent next `wait_for_interrupt` from sleeping, wake up other harts if needed.
     /// This particular implementation does nothing, since `wait_for_interrupt` never sleeps
@@ -40,11 +41,7 @@ mod arm {
         asm::wfe();
         //asm::nop();
     }
-}
 
-
-#[cfg(no_std)]
-pub mod no_std {
     pub fn in_thread_mode() -> bool {
         const SCB_ICSR: *const u32 = 0xE000_ED04 as *const u32;
         // NOTE(unsafe) single-instruction load with no side effects
@@ -55,13 +52,13 @@ pub mod no_std {
         where
             F: FnOnce() -> R,
     {
-        cortex_m::interrupt::free(|cs| {
+        cortex_m::interrupt::free(|_cs| {
             f()
         })
     }
 }
 
-#[cfg(not(no_std))]
+#[cfg(feature="std")]
 mod std {
     use std::sync::{Mutex, Once};
     use std::sync::atomic::AtomicBool;

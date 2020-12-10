@@ -3,19 +3,16 @@
 
 #![allow(dead_code)]
 
-#[cfg(not(no_std))]
+#[cfg(feature="std")]
 #[macro_use]
+#[cfg(feature="std")]
 extern crate std;
 
-mod executor;
-mod alloc;
-mod platform;
+pub extern crate heapless;
+
+pub mod executor;
 pub mod task;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod alloc;
+mod platform;
+

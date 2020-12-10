@@ -19,7 +19,9 @@ use heapless::{
     Vec,
     String,
     consts::*,
+    ArrayLength
 };
+
 use crate::{
     alloc::Alloc,
     platform,
@@ -36,8 +38,7 @@ const TASK_TERMINATED: u8 = 2;
 
 type Spawner<F> = (Box<dyn Task>, JoinHandle<F>);
 
-
-struct Box<T: ?Sized> {
+pub struct Box<T: ?Sized> {
     pointer: UnsafeCell<*const T>,
 }
 
@@ -113,7 +114,7 @@ impl<F> TCB<F>
     }
 }
 
-trait Task {
+pub trait Task {
     fn is_ready(&self) -> bool;
     fn signal_ready(&self);
 
@@ -163,7 +164,7 @@ impl<F> Task for TCB<F>
     }
 
     fn do_poll(&self) {
-        println!("do-poll {}", self.name);
+        log::trace!("do-poll {}", self.name);
         self.signal_pending();
         let raw_waker = RawWaker::new(self.get_state_handle(), &VTABLE);
         let waker = unsafe { Waker::from_raw(raw_waker) };
@@ -174,11 +175,10 @@ impl<F> Task for TCB<F>
         let result = pin.poll(&mut context);
 
         if let Poll::Ready(val) = result {
-            println!("terminated {}", self.name);
+            log::debug!("terminated {}", self.name);
             self.signal_terminated();
             unsafe {
                 self.exit.get().replace(Some(val));
-                println!("waking waiter");
                 let waker = &*self.completion_waker.get();
                 if let Some(ref waker) = waker {
                     waker.wake_by_ref();
@@ -226,14 +226,11 @@ impl<F> Future for JoinHandle<F>
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        println!("polling handle for {}", self.task.name);
         unsafe {
             let v = &*self.task.exit.get();
             if let Some(val) = v {
-                println!("{} is ready", self.task.name);
                 Poll::Ready(*val)
             } else {
-                println!("{} is pending", self.task.name);
                 (self.task.completion_waker.get()).replace(Some(cx.waker().clone()));
                 Poll::Pending
             }
@@ -241,6 +238,13 @@ impl<F> Future for JoinHandle<F>
     }
 }
 
+pub trait Exec {
+
+}
+
+impl Exec for Executor {
+
+}
 
 pub struct Executor {
     alloc: UnsafeCell<Alloc>,
@@ -248,9 +252,10 @@ pub struct Executor {
 }
 
 impl Executor {
-    pub fn new(memory: &'static mut [u8]) -> Self {
+    pub fn new<N: ArrayLength<Box<dyn Task>>>(tasks: Vec<Box<dyn Task>, N>, memory: &'static mut [u8]) -> Self {
         Self {
             alloc: UnsafeCell::new(Alloc::new(memory)),
+            //tasks: UnsafeCell::new(tasks),
             tasks: UnsafeCell::new(Vec::new()),
         }
     }
@@ -279,7 +284,7 @@ impl Executor {
     }
 
     fn run(&'static self) {
-        println!("run!");
+        log::trace!("run!");
         loop {
             let all_terminated = platform::critical_section(|| {
                 // SAFETY: We're inside a global critical section
@@ -289,7 +294,7 @@ impl Executor {
             });
 
             if all_terminated {
-                log::info!("terminating");
+                log::trace!("terminating");
                 return;
             }
 
@@ -306,7 +311,6 @@ impl Executor {
 
 
             for t in ready.iter() {
-                println!("loop!");
                 t.do_poll();
             }
         }
@@ -329,12 +333,19 @@ static VTABLE: RawWakerVTable = {
     RawWakerVTable::new(clone, wake, wake_by_ref, drop)
 };
 
+/// Run one round of the task executor for
+/// pending tasks.
 pub fn run() {
+    // SAFETY: Internally uses a global mutex/critical-section.
     unsafe {
         EXECUTOR.as_ref().unwrap().run()
     }
 }
 
+/// Run, forever, rounds of executing pending tasks, or
+/// waiting for newly spawned or newly-ready tasks.
+///
+/// Does not return.
 pub fn run_forever() -> ! {
     loop {
         run()
@@ -345,13 +356,15 @@ pub static mut EXECUTOR: Option<Executor> = None;
 
 #[macro_export]
 macro_rules! init_executor {
-    ($size:literal) => {
-        static mut EXECUTOR_HEAP: [u8; $size] = [0; $size];
+    (tasks: $num_tasks:literal, memory: $mem_bytes:literal) => {
+        static mut EXECUTOR_HEAP: [u8; $mem_bytes] = [0; $mem_bytes];
+        let task_list: $crate::heapless::Vec<_, $crate::heapless::consts::U8> = $crate::heapless::Vec::new();
 
-        let executor = Executor::new(
+        let executor = $crate::executor::Executor::new(
+            task_list,
             unsafe {
                 &mut EXECUTOR_HEAP
-            }
+            },
         );
 
         unsafe {
@@ -362,7 +375,7 @@ macro_rules! init_executor {
 
 #[cfg(test)]
 mod tests {
-    use crate::executor::{Executor, run};
+    use crate::executor::run;
     use simple_logger::SimpleLogger;
     use crate::task::{spawn, defer};
 

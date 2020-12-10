@@ -14,11 +14,29 @@ version = "0.5.6"
 
 [dependencies.log]
 version = "0.4.11"
-features = ["std"]
 
-[dependencies.simple_logger]
-version = "1.11.0"
+########################################################################
+# features
+########################################################################
+[features]
+default = ["std"]
+std = []
+
+########################################################################
+# cortex-m dependencies
+########################################################################
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 cortex-m = "0.6.3"
+
+########################################################################
+# development dependencies
+########################################################################
+
+[dev-dependencies.log]
+version = "0.4.11"
+features = ["std"]
+
+[dev-dependencies.simple_logger]
+version = "1.11.0"
 

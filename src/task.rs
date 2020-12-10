@@ -1,6 +1,6 @@
 use core::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use crate::executor::{JoinHandle, SpawnError, EXECUTOR};
 
 pub async fn defer() {
@@ -30,7 +30,6 @@ pub async fn defer() {
 pub fn spawn<F>(name: &str, future: F) -> Result<JoinHandle<F>, SpawnError>
     where F: Future,
           F::Output: Copy, {
-    log::error!("spawn!!!");
     unsafe {
         EXECUTOR.as_ref().unwrap().spawn(name, future)
     }

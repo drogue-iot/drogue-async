@@ -1,4 +1,6 @@
-/target
+target
 Cargo.lock
 log
+logs/
 .idea
+.DS_Store
