@@ -14,6 +14,10 @@
 //!
 //! Within an asyncrhonous context, `defer()` will yield execution back to the
 //! executor to allow other tasks an opportunity to run, if desired.
+//!
+//! To use within an embedded context, include with `default-features = false`
+//! and enable the `cortex-m` feature. This is not stupendously ergonomic, and
+//! may soon change.
 
 #![cfg_attr(not(test), no_std)]
 #![allow(dead_code)]
