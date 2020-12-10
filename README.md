@@ -3,12 +3,14 @@
 ```rust
 init_executor!(memory: 1024);
 
-let join_handler = spawn( async move {
+let join_handle = spawn( async move {
   ...
   spawn( async move {
     // nested
   } ).await;
-} );
+} ).unwrap();
+
+let result = join_handle.join();
 ```
 
 ## Features
