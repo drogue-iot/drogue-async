@@ -21,7 +21,6 @@ use heapless::{
     Vec,
     String,
     consts::*,
-    ArrayLength,
 };
 
 use crate::{
