@@ -19,18 +19,7 @@ use crate::timer::Timer;
 use embedded_time::duration::Milliseconds;
 
 
-static mut ASYNC_TIMER: Option<AsyncTimer> = None;
-
-
-#[interrupt]
-fn TIM15() {
-    unsafe {
-        cortex_m::interrupt::free(|cs| {
-            ASYNC_TIMER.as_ref().unwrap().signal(cs);
-        });
-    }
-}
-
+pub(crate) static mut ASYNC_TIMER: Option<AsyncTimer> = None;
 
 // ------------------------------------------------------------------------
 // ------------------------------------------------------------------------

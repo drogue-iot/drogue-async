@@ -14,9 +14,6 @@ use stm32l4xx_hal::{
     interrupt,
     rcc::RccExt,
     stm32::Peripherals,
-    pac::TIM15 as ASYNC_TIMER,
-    //pac::TIM2 as TEST_TIMER,
-    pac::TIM7 as FUCK,
 };
 
 
@@ -29,7 +26,7 @@ use drogue_async::init_executor;
 use drogue_async::executor;
 use drogue_async::task::{spawn, defer};
 use stm32l4xx_hal::timer::{Timer, Event};
-use crate::async_timer::AsyncTimer;
+use crate::async_timer::{AsyncTimer, ASYNC_TIMER};
 use stm32l4xx_hal::pac::TIM1;
 use cortex_m::peripheral::NVIC;
 use log::Level::Debug;
@@ -63,16 +60,6 @@ fn main() -> ! {
 
     init_executor!( memory: 1024 );
 
-    /*
-    let mut tim15 = hal::timer::Timer::tim15(
-        device.TIM15,
-        1.hz(),
-        clocks,
-        &mut rcc.apb2,
-    );
-     */
-
-    //let mut test_timer = crate::timer::Timer::tim2( device.TIM2, clocks, &mut rcc.apb1r1);
     let mut tim15 = crate::timer::Timer::tim15(device.TIM15, clocks, &mut rcc.apb2);
 
     unsafe {
@@ -116,5 +103,13 @@ fn main() -> ! {
 
 
 
+#[interrupt]
+fn TIM15() {
+    unsafe {
+        cortex_m::interrupt::free(|cs| {
+            ASYNC_TIMER.as_ref().unwrap().signal(cs);
+        });
+    }
+}
 
 

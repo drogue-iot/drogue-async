@@ -29,6 +29,7 @@ impl Heap {
         }
     }
 
+    /// Creates a heap around a static byte array.
     pub fn new(heap: &'static [u8]) -> Self {
         let heap_bottom = heap.as_ptr() as usize;
         let heap_size = heap.len();
@@ -109,18 +110,6 @@ impl Heap {
         self.size - self.used
     }
 
-    /// Extends the size of the heap by creating a new hole at the end
-    ///
-    /// # Unsafety
-    ///
-    /// The new extended area must be valid
-    pub unsafe fn extend(&mut self, by: usize) {
-        let top = self.top();
-        let layout = Layout::from_size_align(by, 1).unwrap();
-        self.holes
-            .deallocate(NonNull::new_unchecked(top as *mut u8), layout);
-        self.size += by;
-    }
 }
 
 /// Align downwards. Returns the greatest x with alignment `align`
