@@ -1,3 +1,5 @@
+//! Functions for running the executor's loop, once or forever.
+
 use core::{
     cell::UnsafeCell,
     future::Future,
@@ -19,18 +21,18 @@ use heapless::{
     Vec,
     String,
     consts::*,
-    ArrayLength
+    ArrayLength,
 };
 
 use crate::{
     alloc::Alloc,
     platform,
 };
+use core::sync::atomic::compiler_fence;
+use crate::task::{JoinHandle, SpawnError};
 
-#[derive(Copy, Clone, Debug)]
-pub enum SpawnError {
-    TaskListFull,
-}
+
+
 
 const TASK_PENDING: u8 = 0;
 const TASK_READY: u8 = 1;
@@ -38,7 +40,9 @@ const TASK_TERMINATED: u8 = 2;
 
 type Spawner<F> = (Box<dyn Task>, JoinHandle<F>);
 
-pub struct Box<T: ?Sized> {
+
+/// Just enough Box to pin tasks.
+struct Box<T: ?Sized> {
     pointer: UnsafeCell<*const T>,
 }
 
@@ -72,14 +76,18 @@ impl Deref for Box<dyn Task + 'static> {
 }
 
 
-struct TCB<F>
+/// Task Control Block
+///
+/// Tracks the metadata (name), state, waker for it's own completion,
+/// it's exit-value once complete, and the future associated with it.
+pub(crate) struct TCB<F>
     where
         F: ?Sized + Future,
 {
     name: String<U16>,
     state: AtomicU8,
-    completion_waker: UnsafeCell<Option<Waker>>,
-    exit: UnsafeCell<Option<F::Output>>,
+    pub(crate) completion_waker: UnsafeCell<Option<Waker>>,
+    pub(crate) exit: UnsafeCell<Option<F::Output>>,
     future: UnsafeCell<F>,
 }
 
@@ -88,6 +96,7 @@ impl<F> TCB<F>
         F: Future,
         F::Output: Copy,
 {
+    /// Create a new task control block.
     fn new(name: &str, future: F) -> Self {
         TCB {
             name: name.into(),
@@ -98,7 +107,8 @@ impl<F> TCB<F>
         }
     }
 
-    fn new_static(alloc: &'static mut Alloc, name: &str, future: F) -> Spawner<F> {
+    /// Allocate within the "heap" a new task control block.
+    fn allocate(alloc: &'static mut Alloc, name: &str, future: F) -> Spawner<F> {
         let task = alloc.alloc_init(
             Self::new(name, future)
         ).unwrap();
@@ -107,36 +117,41 @@ impl<F> TCB<F>
 
         (Box::new(task), handle)
     }
-
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn future_mut(&self) -> &mut F {
-        &mut (*self.future.get())
-    }
 }
 
-pub trait Task {
+/// Trait to allow easy interaction and boxing of a TCB.
+pub(crate) trait Task {
+    /// Check the task state flag to determine if ready to run.
     fn is_ready(&self) -> bool;
+
+    /// Signal the task state flag as ready to run.
     fn signal_ready(&self);
 
+    /// Check the task state flag to determine if pending.
     fn is_pending(&self) -> bool;
+
+    /// Signal the task state flag as pending.
     fn signal_pending(&self);
 
+    /// Check the task state flag to determine if terminated.
     fn is_terminated(&self) -> bool;
+
+    /// Signal the task state flag as terminated.
     fn signal_terminated(&self);
 
-    fn get_state_handle(&self) -> *const ();
+    /// Get a handle (pointer) to the state flag.
+    fn get_state_flag_handle(&self) -> *const ();
 
-    fn do_poll(&self);
+    /// Perform a single poll of the underlying task.
+    unsafe fn do_poll(&self);
 }
 
 impl<F> Task for TCB<F>
-    where F: Future,
+    where F: Future + ?Sized,
           F::Output: Copy,
 {
     fn is_ready(&self) -> bool {
-        let result = self.state.load(Ordering::Acquire);
-        log::trace!("{} is ready? {:?} {}", self.name, &self.state as *const _, result);
-        result == TASK_READY
+        self.state.load(Ordering::Acquire) == TASK_READY
     }
 
     fn signal_ready(&self) {
@@ -159,103 +174,50 @@ impl<F> Task for TCB<F>
         self.state.store(TASK_TERMINATED, Ordering::Relaxed);
     }
 
-    fn get_state_handle(&self) -> *const () {
+    fn get_state_flag_handle(&self) -> *const () {
         &self.state as *const _ as *const ()
     }
 
-    fn do_poll(&self) {
-        log::trace!("do-poll {}", self.name);
+    unsafe fn do_poll(&self) {
+        // About to poll, mark as pending
         self.signal_pending();
-        let raw_waker = RawWaker::new(self.get_state_handle(), &VTABLE);
-        let waker = unsafe { Waker::from_raw(raw_waker) };
+
+        // State flag is an AtomicU8
+        let raw_waker = RawWaker::new(self.get_state_flag_handle(), &VTABLE);
+        let waker = Waker::from_raw(raw_waker);
         let mut context = Context::from_waker(&waker);
 
-        let f = unsafe { &mut self.future_mut() };
-        let pin = unsafe { Pin::new_unchecked(&mut **f) };
+        let f = &mut &mut (*self.future.get());
+        let pin = Pin::new_unchecked(&mut **f);
         let result = pin.poll(&mut context);
 
         if let Poll::Ready(val) = result {
-            log::debug!("terminated {}", self.name);
+            // If this task is ready then it has completed and terminated
+            self.exit.get().replace(Some(val));
+            // Ensure the exit value is replaced *before* signaling
+            // any waiters that it is available.
+            compiler_fence(Ordering::SeqCst);
             self.signal_terminated();
-            unsafe {
-                self.exit.get().replace(Some(val));
-                let waker = &*self.completion_waker.get();
-                if let Some(ref waker) = waker {
-                    waker.wake_by_ref();
-                }
+            let waker = &*self.completion_waker.get();
+            // If someone is waiting on the JoinHandle, signal it up the line.
+            if let Some(ref waker) = waker {
+                waker.wake_by_ref();
             }
         }
     }
 }
 
-// TODO: Move storage of exit value within JoinHandle itself and track drops.
-pub struct JoinHandle<F>
-    where F: Future + ?Sized + 'static,
-          F::Output: Copy,
-{
-    task: &'static TCB<F>,
-}
 
-impl<F> JoinHandle<F>
-    where F: Future + ?Sized + 'static,
-          F::Output: Copy
-{
-    fn new(task: &'static TCB<F>) -> Self {
-        Self {
-            task,
-        }
-    }
-
-    pub fn join(&self) -> F::Output {
-        loop {
-            // TODO: Add locking
-            unsafe {
-                let v = &*self.task.exit.get();
-                if let Some(val) = v {
-                    return *val;
-                }
-            }
-        }
-    }
-}
-
-impl<F> Future for JoinHandle<F>
-    where F: Future + ?Sized + 'static,
-          F::Output: Copy
-{
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unsafe {
-            let v = &*self.task.exit.get();
-            if let Some(val) = v {
-                Poll::Ready(*val)
-            } else {
-                (self.task.completion_waker.get()).replace(Some(cx.waker().clone()));
-                Poll::Pending
-            }
-        }
-    }
-}
-
-pub trait Exec {
-
-}
-
-impl Exec for Executor {
-
-}
-
+#[doc(hidden)]
 pub struct Executor {
     alloc: UnsafeCell<Alloc>,
-    tasks: UnsafeCell<Vec<Box<dyn Task>, U8>>,
+    tasks: UnsafeCell<Vec<Box<dyn Task>, U64>>,
 }
 
 impl Executor {
-    pub fn new<N: ArrayLength<Box<dyn Task>>>(tasks: Vec<Box<dyn Task>, N>, memory: &'static mut [u8]) -> Self {
+    pub fn new(memory: &'static mut [u8]) -> Self {
         Self {
             alloc: UnsafeCell::new(Alloc::new(memory)),
-            //tasks: UnsafeCell::new(tasks),
             tasks: UnsafeCell::new(Vec::new()),
         }
     }
@@ -264,7 +226,7 @@ impl Executor {
         where F: Future,
               F::Output: Copy,
     {
-        let spawner = TCB::new_static(
+        let spawner = TCB::allocate(
             unsafe { &mut *self.alloc.get() },
             name,
             future,
@@ -311,7 +273,11 @@ impl Executor {
 
 
             for t in ready.iter() {
-                t.do_poll();
+                // SAFETY: We are the only path calling do_poll, and it only
+                // manipulated non-shared or otherwise atomic aspects of itself.
+                unsafe {
+                    t.do_poll();
+                }
             }
         }
     }
@@ -352,16 +318,16 @@ pub fn run_forever() -> ! {
     }
 }
 
+#[doc(hidden)]
 pub static mut EXECUTOR: Option<Executor> = None;
 
 #[macro_export]
+/// Initialize the executor with a specified amount of memory for storing
+/// tasks.
 macro_rules! init_executor {
-    (tasks: $num_tasks:literal, memory: $mem_bytes:literal) => {
+    (memory: $mem_bytes:literal) => {
         static mut EXECUTOR_HEAP: [u8; $mem_bytes] = [0; $mem_bytes];
-        let task_list: $crate::heapless::Vec<_, $crate::heapless::consts::U8> = $crate::heapless::Vec::new();
-
         let executor = $crate::executor::Executor::new(
-            task_list,
             unsafe {
                 &mut EXECUTOR_HEAP
             },
@@ -384,7 +350,7 @@ mod tests {
     fn recurse() {
         SimpleLogger::new().init().unwrap();
 
-        init_executor!( 1024 );
+        init_executor!( memory: 1024 );
         let j1 = spawn("root-1", async move {
             let s1 = spawn("sub-1", async move {
                 for i in 1..10_000_000 {
@@ -420,6 +386,5 @@ mod tests {
         let v2 = j2.join();
 
         println!("v1={}, v2={}", v1, v2);
-
     }
 }

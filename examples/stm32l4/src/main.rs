@@ -61,7 +61,7 @@ fn main() -> ! {
         .pclk2(80.mhz())
         .freeze(&mut flash.acr, &mut pwr);
 
-    init_executor!( tasks: 8, memory: 1024 );
+    init_executor!( memory: 1024 );
 
     /*
     let mut tim15 = hal::timer::Timer::tim15(

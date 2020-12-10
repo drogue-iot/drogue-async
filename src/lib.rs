@@ -8,6 +8,7 @@
 #[cfg(feature="std")]
 extern crate std;
 
+#[doc(hidden)]
 pub extern crate heapless;
 
 pub mod executor;
